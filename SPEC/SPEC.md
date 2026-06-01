@@ -16,8 +16,6 @@ MailKick is a Java-based, Docker application that acts as an AI email agent for 
 - **Checkstyle + SpotBugs** added from first project setup
 - **SLF4J** for logging (stdout, structured for containers)
 - **No Lombok**
-- **Spring MVC + Thymeleaf** for server-side rendered rules management UI
-- **Ed25519** for token authentication (via Java `java.security` / Bouncy Castle)
 - **Anthropic** access via a community Java SDK
 - **HTML to Markdown:** [CopyDown](https://github.com/furstenheim/copy_down) (`io.github.furstenheim:copy_down`)
 - **HTTP port:** application listens on `8080` inside the container; host port mapping decided at deployment time
@@ -288,7 +286,7 @@ If any step of the pipeline fails (Anthropic API unavailable, LLM error, tool ex
 
 - **Destination:** moved to **Inbox**
 - **Read state:** marked as **unread**
-- **Flagged:** marked as **flagged** (JMAP keyword `$flagged` — maps to IMAP `\Flagged`, visible as a star/flag in Thunderbird, the FastMail web UI, and other clients)
+- **Flagged:** marked as **flagged** (JMAP keyword `$flagged` — maps to IMAP `\Flagged`, visible as a star/flag in the FastMail web UI and other clients)
 - **Activity log:** an entry is written with `action = "ERROR"` and `detail` containing the failure reason
 
 This ensures no email is ever lost in Triage due to a processing failure — they all surface in Inbox with a clear visual signal that they need manual attention.
@@ -417,34 +415,8 @@ Secrets required:
 | `ANTHROPIC_API_KEY` | Authentication for LLM calls |
 | `AWS_ACCESS_KEY_ID` | IAM user keypair for runtime AWS access (DynamoDB `us-east-2`) |
 | `AWS_SECRET_ACCESS_KEY` | IAM user keypair for runtime AWS access (DynamoDB `us-east-2`) |
-| `MAILKICK_PUBLIC_KEY` | Base64-encoded Ed25519 public key for validating Thunderbird extension tokens |
 
-All five keys are stored in a **single AWS Secrets Manager secret** as a JSON object. Retrieved at build time and written into `credentials.sh`, which is embedded in the Docker image and sourced at application bootstrap.
-
-### Key Generation — `mailkick-keygen`
-
-A dedicated Maven module `mailkick-keygen` provides a standalone CLI tool for generating the Ed25519 keypair.
-
-**Usage:**
-```/dev/null/keygen.sh#L1-2
-java -jar mailkick-keygen.jar
-```
-
-**Output:**
-```/dev/null/keygen-output.txt#L1-6
-Ed25519 keypair generated successfully.
-
-MAILKICK_PUBLIC_KEY (store in AWS Secrets Manager):
-MCowBQYDK2VwAyEA...<base64-encoded public key>...
-
-Private key (paste into Thunderbird extension settings):
-MC4CAQAwBQYDK2Vw...<base64-encoded private key>...
-```
-
-- Both keys are printed as **Base64-encoded DER** format
-- The tool prints clearly labelled instructions for where each key goes
-- The private key is never written to disk — printed to stdout only
-- Maven artifact: `co.kuznetsov:mailkick-keygen`
+All four keys are stored in a **single AWS Secrets Manager secret** as a JSON object. Retrieved at build time and written into `credentials.sh`, which is embedded in the Docker image and sourced at application bootstrap.
 
 ---
 
@@ -514,55 +486,6 @@ MailKick does **not** perform any automated recovery actions when health flips t
 However, the health status itself **clears automatically** as soon as the underlying problem resolves: each normal scheduled retry (polling, prompt reload, etc.) re-tests the affected component, and a single successful call flips the component back to `healthy`. The `/health` endpoint then returns `200` again with no manual intervention.
 
 When FaceKick alerts on a `500` health response, the **owner is responsible for diagnosing and determining the recovery path** — e.g. inspecting logs, restarting the container, fixing upstream services, manually clearing stuck emails, or rotating credentials. Transient issues will resolve on their own; persistent ones require action.
-
----
-
-## Authentication
-
-MailKick uses **Ed25519 asymmetric token authentication** for the rules management UI. There is no shared API key.
-
-**Keypair:**
-- The **private key** lives in the Thunderbird extension settings (one-time paste by the user, Base64-encoded)
-- The **public key** is stored in AWS Secrets Manager and baked into the Docker image at build time (Base64-encoded)
-
-**Token format:**
-- The Thunderbird extension signs the current ISO 8601 timestamp (e.g. `2025-01-15T10:30:00Z`) with the private key using Ed25519
-- The resulting signature is Base64-encoded
-- The token is transmitted via the `X-API-Key` HTTP header: `X-API-Key: <base64-signature>:<iso-timestamp>`
-
-**Validation (MailKick):**
-1. Extract the Base64 signature and ISO timestamp from the `X-API-Key` header
-2. Verify the Ed25519 signature of the timestamp using the baked-in public key
-3. Check the timestamp is within **24 hours** of the current time
-4. If either check fails → `401 Unauthorized`
-
-The same token is used for both opening the UI and all subsequent rule operations (add, edit, delete). Every request is validated independently.
-
----
-
-## Rules Management
-
-### Web UI
-
-MailKick serves a **Thymeleaf**-based web UI for rules management. It is rendered inside a **Thunderbird sidebar panel** — no external browser is involved.
-
-**Flow:**
-1. User right-clicks an email in Thunderbird and selects **"Show in MailKick"**
-2. The Thunderbird sidebar panel opens (or refreshes if already open)
-3. The extension reads FROM, subject, and TO from the selected email
-4. The extension signs the current ISO timestamp with the private key
-5. The panel makes a `fetch()` call to MailKick with:
-   - `X-API-Key: <base64-sig>:<iso-ts>` header
-   - FROM, subject, TO as request parameters
-6. MailKick validates the token and returns a Thymeleaf-rendered HTML fragment showing:
-   - The matching rule for this sender, if one exists
-   - A form to add a new rule for this sender or domain
-   - Options to edit or delete the existing rule
-7. Subsequent rule operations (add, edit, delete) are made as `fetch()` calls from the panel, each carrying a freshly signed `X-API-Key` header
-
-**Technology:** Spring MVC + Thymeleaf (server-side rendered HTML fragments) + minimal JavaScript in the extension panel to issue `fetch()` calls and inject the response HTML.
-
-**Scope:** Rule CRUD only — no LLM dry-run preview in the initial version.
 
 ---
 
@@ -657,9 +580,8 @@ mailkick/
 ├── mailkick-jmap/                 (FastMail JMAP client)
 ├── mailkick-rules/               (DynamoDB rules engine)
 ├── mailkick-agent/               (LLM agent, tools, email normalisation)
-├── mailkick-server/              (Spring Boot app, health API, web UI)
+├── mailkick-server/              (Spring Boot app, health API)
 ├── mailkick-dashboard/           (Thymeleaf templates and static resources)
-├── mailkick-keygen/              (CLI keypair generator)
 └── mailkick-docker/              (Dockerfile, build context)
     ├── download/                  (staging area for JAR + credentials.sh)
     └── dist/                      (output: mailkick.tar)
@@ -731,19 +653,6 @@ Spring Boot application entry point. Contains:
 - `MailKickApplication` — main class, reads env vars from `credentials.sh`, initialises all components, registers shutdown hook
 - `MailKickTriageProcessor` — implements `TriageProcessor`; orchestrates the full email processing pipeline (rules check → normalise → LLM → finalise)
 - `HealthController` — `GET /health` endpoint, aggregates component health states
-- `RulesController` — Thymeleaf web UI endpoints (`GET /ui`, `POST /ui/rules`, `DELETE /ui/rules/{sender}`)
-- `TokenValidator` — Ed25519 signature validation for `X-API-Key` header
-
-### `mailkick-dashboard`
-Thymeleaf templates and static resources for the rules management UI. Contains:
-- `src/main/resources/templates/` — Thymeleaf HTML templates for the rules UI
-- `src/main/resources/static/` — CSS and any minimal static assets
-- No Java code — resources only, packaged as a JAR and included as a dependency by `mailkick-server`
-
-### `mailkick-keygen`
-Standalone CLI tool for Ed25519 keypair generation. Contains:
-- `KeyGenMain` — generates keypair, prints Base64-encoded public and private keys to stdout
-- No Spring, no dependencies beyond Java 21 stdlib
 
 ### `mailkick-docker`
 Docker build context. Contains:

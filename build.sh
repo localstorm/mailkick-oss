@@ -73,7 +73,6 @@ lines = [
     export_line("ANTHROPIC_API_KEY",     secret["ANTHROPIC_API_KEY"]),
     export_line("AWS_ACCESS_KEY_ID",     secret["AWS_ACCESS_KEY_ID"]),
     export_line("AWS_SECRET_ACCESS_KEY", secret["AWS_SECRET_ACCESS_KEY"]),
-    export_line("MAILKICK_PUBLIC_KEY",   secret.get("MAILKICK_PUBLIC_KEY", "")),
     export_line("AWS_REGION",            os.environ["AWS_REGION"]),
     export_line("CONFIG_S3_BUCKET",      os.environ["CONFIG_S3_BUCKET"]),
     export_line("CONFIG_S3_KEY",         os.environ["CONFIG_S3_KEY"]),

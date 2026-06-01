@@ -19,7 +19,6 @@
         <module>mailkick-agent</module>
         <module>mailkick-server</module>
         <module>mailkick-dashboard</module>
-        <module>mailkick-keygen</module>
     </modules>
 
     <properties>

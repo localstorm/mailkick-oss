@@ -10,7 +10,7 @@ Phases are sequential. Each phase produces a working, testable increment. The Th
 
 **Tasks:**
 - Create parent `pom.xml` with all module declarations, dependency management (Spring Boot 3.x BOM, AWS SDK v2 BOM, CopyDown, community Anthropic SDK)
-- Create empty module stubs: `mailkick-model`, `mailkick-jmap`, `mailkick-rules`, `mailkick-agent`, `mailkick-server`, `mailkick-dashboard`, `mailkick-keygen`, `mailkick-docker`
+- Create empty module stubs: `mailkick-model`, `mailkick-jmap`, `mailkick-rules`, `mailkick-agent`, `mailkick-server`, `mailkick-dashboard`, `mailkick-docker`
 - Configure Checkstyle and SpotBugs in parent POM
 - Configure `mailkick-server` as the Spring Boot executable module
 - Add `mailkick-docker` scaffold: `Dockerfile`, `scripts/launch.sh`, `.gitignore` for `download/` and `dist/`
@@ -66,21 +66,7 @@ Phases are sequential. Each phase produces a working, testable increment. The Th
 
 ---
 
-## Phase 4 — `mailkick-keygen`
-
-**Goal:** Standalone CLI tool for Ed25519 keypair generation.
-
-**Tasks:**
-- `KeyGenMain` — generates Ed25519 keypair using `java.security`
-- Base64-encode both keys (DER format)
-- Print clearly labelled output: public key for Secrets Manager, private key for Thunderbird
-- Private key never written to disk
-
-**Done when:** running `java -jar mailkick-keygen.jar` prints a valid keypair; public key can be verified against a message signed with the private key.
-
----
-
-## Phase 5 — `mailkick-jmap` — Push + Polling
+## Phase 4 — `mailkick-jmap` — Push + Polling
 
 **Goal:** MailKick receives signals when emails arrive in Triage.
 
@@ -182,24 +168,6 @@ Depends on core system (Phases 1–10) being stable. Covers:
 - `DigestRunner` — `@Scheduled` task aligned to `digestTime` in configured `timezone`; queries all `mailkick.log` entries regardless of date (accumulates across missed days); serialises entries into XML; calls Anthropic with `digestPromptName` prompt; creates digest email in Inbox via JMAP `Email/set`; deletes log entries via `BatchWriteItem` only on success
 - Skip if no log entries exist
 
-## Deferred — Rules Management Web UI
-
-Depends on core system (Phases 1–11) being stable. Covers:
-- `TokenValidator` — parses `X-API-Key: <base64-sig>:<iso-ts>` header; verifies Ed25519 signature using baked-in `MAILKICK_PUBLIC_KEY`; checks timestamp within 24 hours; returns `401` on failure
-- `RulesController` — `GET /ui` with sender context (from, subject, to params); `POST /ui/rules` create; `PUT /ui/rules/{sender}` update; `DELETE /ui/rules/{sender}` delete; all validated via `TokenValidator`
-- `mailkick-dashboard` templates — rules list, sender detail view, add/edit/delete forms
-- Wired into `mailkick-server` as a dependency
-
-## Deferred — Thunderbird Extension
-
-Depends on Rules Management Web UI being complete and stable. Covers:
-- Extension scaffold (manifest, sidebar panel)
-- Settings UI (server URL, Base64 private key)
-- Right-click context menu → "Show in MailKick"
-- Ed25519 signing of ISO timestamp in JavaScript
-- `fetch()` calls to MailKick `/ui` with `X-API-Key` header
-- Rendering returned HTML fragments in the sidebar panel
-
 ---
 
 ## Dependency Map
@@ -207,14 +175,11 @@ Depends on Rules Management Web UI being complete and stable. Covers:
 ```
 Phase 1  (skeleton)
     └── Phase 2  (model)
-            ├── Phase 3  (keygen)       ← standalone, no further deps
-            ├── Phase 4  (jmap core)
-            │       └── Phase 5  (push + poll)
-            │               └── Phase 6  (rules)
-            │                       └── Phase 7  (agent - prompt + LLM)
-            │                               └── Phase 8  (agent - tools + log)
-            │                                       └── Phase 9  (server - pipeline)
-            │                                               └── Phase 10 (docker)  ← DONE
-            │
-            └── (deferred: Digest → Rules UI → Thunderbird Extension)
+            ├── Phase 3  (jmap core)
+            │       └── Phase 4  (push + poll)
+            │               └── Phase 5  (rules)
+            │                       └── Phase 6  (agent - prompt + LLM)
+            │                               └── Phase 7  (agent - tools + log)
+            │                                       └── Phase 8  (server - pipeline)
+            │                                               └── Phase 9 (docker)  ← DONE
 ```

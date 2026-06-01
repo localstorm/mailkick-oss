@@ -32,7 +32,6 @@ MailKick is an AI email agent for FastMail. It watches the **Triage** folder via
 ```
 mailkick-model  ←  mailkick-jmap  ←  mailkick-rules  ←  mailkick-agent  ←  mailkick-server
                                                                          ←  mailkick-dashboard (resources only)
-mailkick-keygen  (standalone, no Spring)
 ```
 
 ### Module responsibilities
@@ -43,9 +42,8 @@ mailkick-keygen  (standalone, no Spring)
 | `mailkick-jmap` | FastMail JMAP client — SSE push listener, 60s fallback poller, email fetch/normalise/move, triage worker |
 | `mailkick-rules` | Rules engine — DynamoDB lookup (exact sender → domain fallback), rule execution via JMAP |
 | `mailkick-agent` | Anthropic SDK wrapper, tool registry, all tool implementations, media feed client, activity logger, digest runner |
-| `mailkick-server` | Spring Boot entry point, pipeline orchestrator, `/health` endpoint, Thymeleaf rules UI, Ed25519 token validation |
+| `mailkick-server` | Spring Boot entry point, pipeline orchestrator, `/health` endpoint |
 | `mailkick-dashboard` | Thymeleaf templates + static assets (no Java code) |
-| `mailkick-keygen` | Standalone CLI that generates Ed25519 keypairs and prints them to stdout |
 | `mailkick-docker` | Dockerfile (Amazon Corretto 21), launch script, build staging areas |
 
 ### Email processing pipeline
@@ -67,11 +65,7 @@ Runtime configuration is an XML file stored in S3 (bucket + key from env vars ba
 
 - **DynamoDB (us-east-2):** `mailkick.rules` (PK: `sender`) and `mailkick.log` (PK: `date`, SK: `timestamp`)
 - **S3:** agent config XML (bucket/key from env)
-- **Secrets Manager:** single JSON secret with `FASTMAIL_API_TOKEN`, `ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `MAILKICK_PUBLIC_KEY`
-
-### Authentication
-
-Web UI requests carry `X-API-Key: <base64-ed25519-sig>:<iso-timestamp>`. MailKick verifies the Ed25519 signature against the baked-in public key and rejects tokens older than 24 hours.
+- **Secrets Manager:** single JSON secret with `FASTMAIL_API_TOKEN`, `ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 
 ## Code Style
 

@@ -4,8 +4,6 @@ MailKick is a self-hosted AI email agent for FastMail. It monitors a designated 
 
 It runs as a single Docker container with no external database beyond DynamoDB and S3.
 
-> **Note:** The rules management UI and Thunderbird extension are not yet implemented.
-
 For the full specification see [`SPEC/SPEC.md`](SPEC/SPEC.md). For the DynamoDB table definitions see [`SPEC/DDB.md`](SPEC/DDB.md).
 
 ## Tools
@@ -59,7 +57,7 @@ The DynamoDB tables, S3 bucket, IAM user, and Secrets Manager secret can all be 
 - Create the two DynamoDB tables with the key schemas and `PAY_PER_REQUEST` billing described in `DDB.md`
 - Create a versioned S3 bucket for the agent config file
 - Create an IAM user with the exact DynamoDB permissions listed in `DDB.md` and read access to the S3 config bucket
-- Store the IAM keypair and the other secrets (`FASTMAIL_API_TOKEN`, `ANTHROPIC_API_KEY`, `MAILKICK_PUBLIC_KEY`) in a Secrets Manager secret as a JSON object
+- Store the IAM keypair and the other secrets (`FASTMAIL_API_TOKEN`, `ANTHROPIC_API_KEY`) in a Secrets Manager secret as a JSON object
 - Optionally output the S3 bucket name and secret ARN as CloudFormation outputs for use in `build.properties`
 
 ---
@@ -150,8 +148,7 @@ All credentials are stored as a single JSON object in AWS Secrets Manager. The s
   "FASTMAIL_API_TOKEN": "fmu1-...",
   "ANTHROPIC_API_KEY": "sk-ant-...",
   "AWS_ACCESS_KEY_ID": "AKIA...",
-  "AWS_SECRET_ACCESS_KEY": "...",
-  "MAILKICK_PUBLIC_KEY": "MCowBQYDK2VwAyEA..."
+  "AWS_SECRET_ACCESS_KEY": "..."
 }
 ```
 
@@ -163,18 +160,3 @@ All credentials are stored as a single JSON object in AWS Secrets Manager. The s
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key (`sk-ant-...`) for LLM calls |
 | `AWS_ACCESS_KEY_ID` | Yes | IAM access key ID — must have DynamoDB read/write on `mailkick.rules` and `mailkick.log`, and S3 read on the config bucket (see [`SPEC/DDB.md`](SPEC/DDB.md) for exact IAM policy) |
 | `AWS_SECRET_ACCESS_KEY` | Yes | IAM secret key corresponding to `AWS_ACCESS_KEY_ID` |
-| `MAILKICK_PUBLIC_KEY` | No | Base64-encoded Ed25519 public key used to verify `X-API-Key` tokens for web UI authentication. If omitted, web UI auth will fail. |
-
-### Generating the Ed25519 keypair
-
-Run the standalone keygen module after building:
-
-```sh
-java -jar mailkick-keygen/target/mailkick-keygen-1.0.0-SNAPSHOT.jar
-```
-
-It prints two values:
-- **Public key** — store this as `MAILKICK_PUBLIC_KEY` in the Secrets Manager secret
-- **Private key** — keep this; it is used to sign `X-API-Key` tokens when making authenticated requests to the web UI
-
-The private key is never stored in AWS — it is printed once and must be saved by you.

@@ -1,0 +1,95 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>AutoSpam Report</title>
+        <style>
+            body {
+                font-family: Arial, Helvetica, sans-serif;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 24px;
+                background: #f5f5f5;
+            }
+            .card {
+                background: #fff;
+                border-radius: 6px;
+                padding: 24px;
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+            }
+            h1 {
+                color: #c0392b;
+                margin: 0 0 16px;
+                font-size: 22px;
+            }
+            .summary {
+                background: #fef9e7;
+                border-left: 4px solid #f39c12;
+                padding: 12px 16px;
+                border-radius: 0 4px 4px 0;
+                margin-bottom: 20px;
+                font-size: 14px;
+            }
+            p {
+                font-size: 14px;
+                margin: 0 0 16px;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 14px;
+            }
+            th {
+                background: #c0392b;
+                color: #fff;
+                padding: 8px 12px;
+                text-align: left;
+                font-weight: normal;
+            }
+            td {
+                padding: 8px 12px;
+                border-bottom: 1px solid #eee;
+            }
+            tr:last-child td {
+                border-bottom: none;
+            }
+            tr:nth-child(even) td {
+                background: #fafafa;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>&#128683; AutoSpam Report</h1>
+            <div class="summary">
+                <strong th:text="${senders.size() + ' sender(s) blocked'}"
+                    >N senders blocked</strong
+                >
+                from
+                <strong th:text="${purgatoryFolder}">Folder</strong> &mdash;
+                emails older than
+                <strong th:text="${purgatoryDays}">7</strong> day(s). Run date:
+                <strong th:text="${date}">today</strong>.
+            </div>
+            <p>
+                The following senders have been added to the spam list and their
+                emails moved to Spam:
+            </p>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 40px">#</th>
+                        <th>Sender</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr th:each="sender, stat : ${senders}">
+                        <td th:text="${stat.count}">1</td>
+                        <td th:text="${sender}">sender@example.com</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </body>
+</html>

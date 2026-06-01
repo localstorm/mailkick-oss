@@ -1,0 +1,26 @@
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.log
+build.properties
+
+# Maven
+target/
+
+# C/C++
+*.o
+*.a
+*.so
+*.exe
+*.out
+a.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

@@ -1,0 +1,12 @@
+# AWS region
+AWS_REGION=us-east-2
+
+# AWS Secrets Manager secret name containing all MailKick secrets
+MAILKICK_SECRET_NAME=
+
+# S3 bucket and key for agent config/prompt file
+CONFIG_S3_BUCKET=
+CONFIG_S3_KEY=
+
+# Optional integration: Media feed REST API URL
+MEDIA_FEED_URL=

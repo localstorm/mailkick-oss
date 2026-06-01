@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+
+    <!--
+        EI_EXPOSE_REP / EI_EXPOSE_REP2: SpotBugs flags storing or returning
+        mutable objects (AWS SDK clients, Jackson Maps, etc.) as potential
+        internal representation exposure. These are intentional design choices
+        in MailKick — AWS clients are effectively singletons, and Jackson POJOs
+        require mutable Maps for deserialization.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!--
+        RV_RETURN_VALUE_IGNORED_BAD_PRACTICE: BlockingQueue.offer() return value
+        ignored in resetState() methods of EventSourceListener and TriagePoller.
+        The signal queue is unbounded (LinkedBlockingQueue), so offer() never
+        returns false in practice. Even if it did, dropped signals are harmless —
+        the worker deduplicates by rechecking the email's current mailbox, and
+        the 60-second polling fallback will re-enqueue any missed IDs.
+    -->
+    <Match>
+        <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/>
+        <Class name="co.kuznetsov.mailkick.jmap.EventSourceListener"/>
+        <Method name="resetState"/>
+    </Match>
+    <Match>
+        <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/>
+        <Class name="co.kuznetsov.mailkick.jmap.TriagePoller"/>
+        <Method name="resetState"/>
+    </Match>
+
+</FindBugsFilter>

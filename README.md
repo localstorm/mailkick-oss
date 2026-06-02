@@ -133,7 +133,7 @@ The application listens on port `8080`. Map it to any host port you prefer.
 curl http://localhost:8080/health
 ```
 
-Returns `200 OK` when all components (FastMail, Anthropic, DynamoDB, S3, Triage) are healthy. Returns `500` with a JSON body describing failing components if any have been continuously unhealthy for more than 5 minutes.
+Returns `200 OK` when all components (FastMail, Anthropic, DynamoDB, S3, Triage) are healthy. Returns `500` with a JSON body describing failing components if any have been unhealthy.
 
 ---
 

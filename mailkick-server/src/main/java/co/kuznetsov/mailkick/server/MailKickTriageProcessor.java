@@ -153,7 +153,9 @@ public final class MailKickTriageProcessor implements TriageProcessor {
                 email,
                 EmailNormaliser.toXml(email),
                 config,
-                outcome.getPromptName()
+                outcome.getPromptName(),
+                true,
+                true
             );
             return;
         }
@@ -184,7 +186,7 @@ public final class MailKickTriageProcessor implements TriageProcessor {
         }
 
         // Step 4: LLM with default prompt
-        runLlm(emailId, email, emailXml, config, config.getDefaultPromptName());
+        runLlm(emailId, email, emailXml, config, config.getDefaultPromptName(), true, false);
     }
 
     private void runLlm(
@@ -192,7 +194,9 @@ public final class MailKickTriageProcessor implements TriageProcessor {
         Email email,
         String emailXml,
         MailKickConfig config,
-        String promptName
+        String promptName,
+        boolean requireToolUse,
+        boolean alreadyMoved
     ) throws IOException {
         // Guardrail: detect prompt injection in the email body before LLM triage
         try {
@@ -223,7 +227,8 @@ public final class MailKickTriageProcessor implements TriageProcessor {
                 config,
                 promptName,
                 emailXml,
-                toolRegistry.getTools(config.getExtraToolsForPrompt(promptName), config.getDisallowedToolsForPrompt(promptName))
+                toolRegistry.getTools(config.getExtraToolsForPrompt(promptName), config.getDisallowedToolsForPrompt(promptName)),
+                requireToolUse
             );
             healthTracker.recordSuccess(HealthComponent.ANTHROPIC);
         } catch (IOException e) {
@@ -257,8 +262,8 @@ public final class MailKickTriageProcessor implements TriageProcessor {
             }
         }
 
-        // Step 6: Finalise
-        if (!erased && !anyMoveTool) {
+        // Step 6: Finalise — if no move tool was called and email isn't already placed, fall back to Inbox
+        if (!erased && !anyMoveTool && !alreadyMoved) {
             String inboxId = resolver.getInboxId();
             withJmapRetry("finalise.inbox:" + emailId, () -> {
                 mover.moveToInboxUnread(emailId, inboxId);

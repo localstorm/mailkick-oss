@@ -257,16 +257,18 @@ public class MailKickConfiguration {
      * {@code SubmitToMediaFeedTool} is included only when {@code MEDIA_FEED_URL} is set.
      * Tools requiring {@link FolderReadResolver} receive it at execution time via their factory.
      *
-     * @param mover     the email mover
-     * @param resolver  the mailbox resolver
-     * @param rulesRepo the rules DynamoDB repository
+     * @param mover         the email mover
+     * @param resolver      the mailbox resolver
+     * @param rulesRepo     the rules DynamoDB repository
+     * @param healthTracker the health tracker
      * @return a fully populated {@link ToolRegistry}
      */
     @Bean
     public ToolRegistry toolRegistry(
         EmailMover mover,
         MailboxResolver resolver,
-        RulesDdbRepository rulesRepo
+        RulesDdbRepository rulesRepo,
+        HealthTracker healthTracker
     ) {
         MoveToFolderTool moveProto = new MoveToFolderTool(mover, resolver, null);
         MarkAsReadTool markRead = new MarkAsReadTool(mover);
@@ -294,7 +296,11 @@ public class MailKickConfiguration {
         List<ToolEntry> extraEntries = new ArrayList<>();
         String mediaFeedUrl = System.getenv("MEDIA_FEED_URL");
         if (mediaFeedUrl != null && !mediaFeedUrl.isBlank()) {
-            SubmitToMediaFeedTool submitTool = new SubmitToMediaFeedTool(new MediaFeedClient(mediaFeedUrl));
+            SubmitToMediaFeedTool submitTool = new SubmitToMediaFeedTool(
+                new MediaFeedClient(mediaFeedUrl),
+                msg -> healthTracker.recordFailure(HealthComponent.MEDIA_FEED, msg),
+                () -> healthTracker.recordSuccess(HealthComponent.MEDIA_FEED)
+            );
             extraEntries.add(new ToolEntry("submit_to_media_feed", submitTool.getToolDeclaration(), r -> submitTool));
         }
         return new ToolRegistry(entries, extraEntries);

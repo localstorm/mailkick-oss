@@ -8,5 +8,6 @@ public enum HealthComponent {
     FASTMAIL,
     DYNAMODB,
     ANTHROPIC,
-    TRIAGE
+    TRIAGE,
+    MEDIA_FEED
 }

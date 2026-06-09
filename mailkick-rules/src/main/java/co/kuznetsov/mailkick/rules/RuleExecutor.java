@@ -114,6 +114,9 @@ public final class RuleExecutor {
                     rule.getTargetFolder()
                 );
                 mover.moveToMailbox(emailId, targetMailboxId);
+                MailKickConfig cfg = configSupplier.get();
+                boolean markAsRead = cfg == null || !cfg.shouldMarkUnread(rule.getTargetFolder());
+                mover.setRead(emailId, markAsRead);
                 LOG.info(
                     "→ {} (continuing to LLM) | from={} | subject={}",
                     rule.getTargetFolder(),

@@ -135,6 +135,7 @@ public class EmailFetcher {
         ArrayNode props = args.putArray("properties");
         props.add("id");
         props.add("mailboxIds");
+        props.add("threadId");
         props.add("subject");
         props.add("from");
         props.add("to");
@@ -480,6 +481,21 @@ public class EmailFetcher {
         public java.util.Map<String, Boolean> getKeywords() {
             return keywords;
         }
+    }
+
+    /**
+     * Returns the number of emails in the given JMAP thread.
+     *
+     * <p>Returns 1 if the thread is not found or contains no emails, so callers can treat
+     * the result as "standalone message" without special-casing the not-found case.
+     *
+     * @param threadId the JMAP thread ID
+     * @return number of emails in the thread, or 1 if the thread cannot be resolved
+     * @throws IOException if the JMAP request fails
+     */
+    public int fetchThreadSize(String threadId) throws IOException {
+        java.util.List<String> emailIds = fetchThreadEmailIds(threadId);
+        return emailIds.isEmpty() ? 1 : emailIds.size();
     }
 
     /**

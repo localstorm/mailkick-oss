@@ -124,32 +124,51 @@ When an email arrives in (or is found in) the **Triage** folder, it is processed
 [Email in Triage]
        |
        v
-[1. Rules Check]
+[1. Thread Consolidation]
+       |
+       |── threadSize > 1 ──→  Move all prior thread emails to Inbox
+       |                       (preserve read state) + new email to Inbox unread → done
+       |
+       threadSize == 1
+       |
+       v
+[2. Rules Check]
        |
        |── SPAM / TRASH / ERASE ────────────────────────────→  Apply, done
        |── MOVE_TO_FOLDER_NO_PROCESSING ────────────────────→  Move, done
        |── MOVE_TO_FOLDER_WITH_PROCESSING ──→  Move to targetFolder
        |                                              |
        |                                              v
-       |                                    [2. LLM Reasoning]
+       |                                    [3. LLM Reasoning]
        |                                              |
        no rule match                                  v
-       |                                    [3. Tool Execution]
+       |                                    [4. Tool Execution]
        v                                              |
-[2. LLM Reasoning]  ←─────────────────────────────────
+[3. LLM Reasoning]  ←──────────────────────────────
        |
        v
-[3. Tool Execution]  (one or more tools selected by LLM)
+[4. Tool Execution]  (one or more tools selected by LLM)
        |
        v
-[4. Finalise]
+[5. Finalise]
        |
        |── email moved to non-Inbox folder ──→  Mark as read
        |── email moved to Inbox ─────────────→  Mark as unread
        |── no move tool called ──────────────→  Move to Inbox, mark as unread
 ```
 
-### Step 1 — Rules Check
+### Step 1 — Thread Consolidation
+
+If the email belongs to a thread that already has other messages in the mailbox (`threadSize > 1`), it is treated as a reply to an ongoing conversation and routed directly to Inbox without any further processing — rules and LLM are both bypassed:
+
+1. Fetch all email IDs in the thread via JMAP `Thread/get`
+2. Move all prior thread emails (every ID except the current one) to Inbox — **read/unread state is preserved as-is**
+3. Move the new email to Inbox and mark it **unread**
+4. Log a `THREAD_CONSOLIDATED` action and return
+
+This keeps conversation threads together in Inbox and avoids the LLM making folder decisions for individual replies mid-thread.
+
+### Step 2 — Rules Check
 
 Before any LLM call, the sender of the email is looked up in the **Rules** table in DynamoDB. Rules always bypass the LLM entirely — if a rule matches, it is applied immediately and processing stops.
 
@@ -185,7 +204,7 @@ AWS region: **`us-east-2`**
 
 See [`DDB.md`](./DDB.md) for the full DynamoDB schema, capacity, IAM permissions, and example items for all MailKick tables.
 
-### Step 2 — LLM Reasoning (Anthropic)
+### Step 3 — LLM Reasoning (Anthropic)
 
 The normalised XML payload is sent to the Anthropic model specified in the S3 config, together with the resolved prompt. The prompt to use is determined as follows:
 - If the email matched a `MOVE_TO_FOLDER_WITH_PROCESSING` rule — use the `promptName` specified in the rule
@@ -202,7 +221,7 @@ This is appropriate because all MailKick tools are terminal actions (move, archi
 
 The LLM is the final authority for unmatched emails — every email that reaches this step will be categorised and acted upon according to the S3 prompt. There is no fallback beyond the LLM.
 
-### Step 3 — Tool Execution
+### Step 4 — Tool Execution
 
 Tools available to the LLM depend on the calling context (triage, archive, digest) and per-prompt configuration.
 
@@ -253,7 +272,7 @@ Standard tools can be explicitly excluded from a prompt using `disallowTools`:
 
 Tool names in `extraTools` and `disallowTools` are validated against the registered tool registry on config load. An unknown name causes a validation failure and the config reload is rejected.
 
-### Step 4 — Finalise
+### Step 5 — Finalise
 
 After tool execution, MailKick applies the following finalisation rules:
 
@@ -321,6 +340,7 @@ Before any LLM call, each email is normalised into a two-document XML structure.
 | `subject` | `Subject` header |
 | `replyTo` | `Reply-To` header |
 | `inReplyTo` | `In-Reply-To` header |
+| `threadSize` | Number of emails in the same JMAP thread; `1` means no prior messages |
 | `dkim` / `spf` / `dmarc` | Parsed from `Authentication-Results` header (added by FastMail); fetched via JMAP `header:Authentication-Results:asText`; defaults to `none` if absent |
 
 **Body extraction — always produces Markdown:**
@@ -357,6 +377,7 @@ The `<attachments>` element is omitted entirely when no attachments are present.
       <subject>...</subject>
       <replyTo>...</replyTo>
       <inReplyTo>...</inReplyTo>
+      <threadSize>1</threadSize>
       <authentication>
         <dkim>pass|fail|none</dkim>
         <spf>pass|fail|softfail|none</spf>
@@ -505,7 +526,7 @@ MailKick maintains a structured log of every action taken on inbound emails. The
 | `messageId` | String | Email `Message-ID` |
 | `from` | String | Sender address |
 | `subject` | String | Email subject |
-| `action` | String | Tool called (e.g. `move_to_folder`, `spam`) or rule type if matched by rules engine (e.g. `SPAM`, `ERASE`) |
+| `action` | String | Tool called (e.g. `move_to_folder`, `spam`), rule type if matched by rules engine (e.g. `SPAM`, `ERASE`), or system action (e.g. `THREAD_CONSOLIDATED`, `OVERSIZE`, `INJECTION_DETECTED`) |
 | `detail` | String | Extra context — target folder name, `promptName` used, compression factor, etc. |
 
 One entry is written per action. If the LLM calls multiple tools for a single email, multiple entries are written.

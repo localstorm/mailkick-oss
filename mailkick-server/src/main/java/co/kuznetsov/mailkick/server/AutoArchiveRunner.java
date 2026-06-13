@@ -272,7 +272,7 @@ public final class AutoArchiveRunner {
             return;
         }
 
-        Email rootEmail = EmailNormaliser.normalise(rootNode.get());
+        Email rootEmail = EmailNormaliser.normalise(rootNode.get(), threadEmailsInFolder.size());
         String emailXml = EmailNormaliser.toXml(rootEmail);
 
         if (anthropicAgent.checkInjection(config, rootEmail.getFrom(), rootEmail.getSubject(), rootEmail.getBody())) {

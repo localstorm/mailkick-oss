@@ -6,6 +6,7 @@ import co.kuznetsov.mailkick.agent.AnthropicAgent;
 import co.kuznetsov.mailkick.agent.FolderReadResolver;
 import co.kuznetsov.mailkick.agent.ToolCall;
 import co.kuznetsov.mailkick.agent.ToolRegistry;
+import co.kuznetsov.mailkick.jmap.EmailFetcher;
 import co.kuznetsov.mailkick.jmap.EmailMover;
 import co.kuznetsov.mailkick.jmap.EmailNormaliser;
 import co.kuznetsov.mailkick.jmap.JmapRetry;
@@ -49,6 +50,7 @@ public final class MailKickTriageProcessor implements TriageProcessor {
     private final AgentPromptLoader promptLoader;
     private final RulesChecker rulesChecker;
     private final RuleExecutor ruleExecutor;
+    private final EmailFetcher fetcher;
     private final EmailMover mover;
     private final MailboxResolver resolver;
     private final AnthropicAgent anthropicAgent;
@@ -62,6 +64,7 @@ public final class MailKickTriageProcessor implements TriageProcessor {
         AgentPromptLoader promptLoader,
         RulesChecker rulesChecker,
         RuleExecutor ruleExecutor,
+        EmailFetcher fetcher,
         EmailMover mover,
         MailboxResolver resolver,
         AnthropicAgent anthropicAgent,
@@ -72,6 +75,7 @@ public final class MailKickTriageProcessor implements TriageProcessor {
         this.promptLoader = promptLoader;
         this.rulesChecker = rulesChecker;
         this.ruleExecutor = ruleExecutor;
+        this.fetcher = fetcher;
         this.mover = mover;
         this.resolver = resolver;
         this.anthropicAgent = anthropicAgent;
@@ -91,10 +95,10 @@ public final class MailKickTriageProcessor implements TriageProcessor {
     }
 
     @Override
-    public void process(String emailId, JsonNode emailNode) {
+    public void process(String emailId, JsonNode emailNode, int threadSize) {
         Email email;
         try {
-            email = EmailNormaliser.normalise(emailNode);
+            email = EmailNormaliser.normalise(emailNode, threadSize);
         } catch (Exception e) {
             LOG.error(
                 "Failed to normalise email {}: {}",
@@ -131,7 +135,35 @@ public final class MailKickTriageProcessor implements TriageProcessor {
         );
         MailKickConfig config = promptLoader.getConfig();
 
-        // Step 1: Rules check
+        // Step 1: Thread consolidation — if this email is part of an existing thread,
+        // move all prior thread emails to Inbox (preserving read state) and route the
+        // new email there unread, bypassing rules and LLM processing entirely.
+        if (email.getThreadSize() > 1) {
+            String inboxId = resolver.getInboxId();
+            List<String> threadEmailIds = withJmapRetry(
+                "thread.fetch:" + emailId,
+                () -> fetcher.fetchThreadEmailIds(email.getThreadId())
+            );
+            List<String> priorEmailIds = threadEmailIds.stream()
+                .filter(id -> !id.equals(emailId))
+                .toList();
+            if (!priorEmailIds.isEmpty()) {
+                withJmapRetry("thread.movePrior:" + emailId, () -> {
+                    mover.moveAllToMailbox(priorEmailIds, inboxId);
+                    return null;
+                });
+            }
+            withJmapRetry("thread.moveNew:" + emailId, () -> {
+                mover.moveToInboxUnread(emailId, inboxId);
+                return null;
+            });
+            healthTracker.recordSuccess(HealthComponent.FASTMAIL);
+            activityLogger.logAction(email, "THREAD_CONSOLIDATED",
+                "threadId=" + email.getThreadId() + " emails=" + threadEmailIds.size());
+            return;
+        }
+
+        // Step 2: Rules check
         Optional<Rule> rule = rulesChecker.findRule(email.getFrom());
         if (rule.isPresent()) {
             RuleExecutionOutcome outcome = withJmapRetry(
@@ -160,10 +192,10 @@ public final class MailKickTriageProcessor implements TriageProcessor {
             return;
         }
 
-        // Step 2: Normalise to XML
+        // Step 3: Normalise to XML
         String emailXml = EmailNormaliser.toXml(email);
 
-        // Step 3: Oversize check
+        // Step 4: Oversize check
         int estimatedTokens = anthropicAgent.estimateTokens(emailXml);
         if (estimatedTokens > config.getMaxEmailSizeTokens()) {
             LOG.warn(
@@ -185,7 +217,7 @@ public final class MailKickTriageProcessor implements TriageProcessor {
             return;
         }
 
-        // Step 4: LLM with default prompt
+        // Step 5: LLM with default prompt
         runLlm(emailId, email, emailXml, config, config.getDefaultPromptName(), true, false);
     }
 

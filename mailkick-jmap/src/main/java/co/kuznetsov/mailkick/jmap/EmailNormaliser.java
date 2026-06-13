@@ -67,11 +67,13 @@ public final class EmailNormaliser {
      * Converts a single JMAP email {@link JsonNode} (from the {@code Email/get} list array)
      * to a normalised {@link Email} model.
      *
-     * @param emailNode the JMAP email JSON node to normalise
+     * @param emailNode  the JMAP email JSON node to normalise
+     * @param threadSize number of emails in the same JMAP thread (1 means no prior messages)
      * @return a populated {@link Email} instance
      */
-    public static Email normalise(JsonNode emailNode) {
+    public static Email normalise(JsonNode emailNode, int threadSize) {
         String id = emailNode.path("id").asText("");
+        String threadId = emailNode.path("threadId").asText("");
 
         // Message-ID: JMAP exposes as String[] property "messageId"
         JsonNode messageIdArray = emailNode.path("messageId");
@@ -146,6 +148,8 @@ public final class EmailNormaliser {
             spf,
             dmarc,
             body,
+            threadId,
+            threadSize,
             documents,
             media,
             other
@@ -194,6 +198,9 @@ public final class EmailNormaliser {
         sb.append("      <inReplyTo>")
             .append(xmlEscape(email.getInReplyTo()))
             .append("</inReplyTo>\n");
+        sb.append("      <threadSize>")
+            .append(email.getThreadSize())
+            .append("</threadSize>\n");
         sb.append("      <authentication>\n");
         sb.append("        <dkim>").append(xmlEscape(email.getDkim())).append("</dkim>\n");
         sb.append("        <spf>").append(xmlEscape(email.getSpf())).append("</spf>\n");

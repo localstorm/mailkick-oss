@@ -12,9 +12,10 @@ public interface TriageProcessor {
     /**
      * Process the given email.
      *
-     * @param emailId   the JMAP email ID
-     * @param emailNode the full JMAP Email/get response node for this email
+     * @param emailId    the JMAP email ID
+     * @param emailNode  the full JMAP Email/get response node for this email
+     * @param threadSize number of emails in the same JMAP thread (1 means no prior messages)
      * @throws IOException if any JMAP or downstream call fails
      */
-    void process(String emailId, JsonNode emailNode) throws IOException;
+    void process(String emailId, JsonNode emailNode, int threadSize) throws IOException;
 }

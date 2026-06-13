@@ -114,6 +114,33 @@ public class EmailMover {
     }
 
     /**
+     * Moves all given emails to a target mailbox in a single batched {@code Email/set} call.
+     * Read/unread state is not changed.
+     *
+     * @param emailIds        the JMAP IDs of the emails to move
+     * @param targetMailboxId the destination JMAP mailbox ID
+     * @throws IOException if the JMAP request fails
+     */
+    public void moveAllToMailbox(java.util.List<String> emailIds, String targetMailboxId)
+        throws IOException {
+        if (emailIds.isEmpty()) {
+            return;
+        }
+        ArrayNode methodCalls = client.newMethodCalls();
+        ObjectNode args = client.newArgs();
+        args.put("accountId", session.getPrimaryAccountId());
+        ObjectNode update = args.putObject("update");
+        for (String emailId : emailIds) {
+            ObjectNode emailUpdate = update.putObject(emailId);
+            ObjectNode mailboxIds = emailUpdate.putObject("mailboxIds");
+            mailboxIds.put(targetMailboxId, true);
+        }
+        client.addMethodCall(methodCalls, "Email/set", args, "s0");
+        client.execute(session.getApiUrl(), methodCalls);
+        LOG.info("Moved {} email(s) to mailbox {}", emailIds.size(), targetMailboxId);
+    }
+
+    /**
      * Moves all given emails to a target mailbox and removes each email's own arrival keyword,
      * in a single batched {@code Email/set} call.
      *

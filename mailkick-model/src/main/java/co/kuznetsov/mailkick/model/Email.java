@@ -25,6 +25,8 @@ public final class Email {
     private final String spf;
     private final String dmarc;
     private final String body;
+    private final String threadId;
+    private final int threadSize;
     private final List<String> documentAttachments;
     private final List<String> mediaAttachments;
     private final List<String> otherAttachments;
@@ -46,6 +48,8 @@ public final class Email {
      * @param spf         SPF result: pass, fail, softfail, or none
      * @param dmarc       DMARC result: pass, fail, or none
      * @param body                email body rendered as Markdown
+     * @param threadId            JMAP thread ID this email belongs to
+     * @param threadSize          number of emails in the same JMAP thread (1 means no prior messages)
      * @param documentAttachments MIME types of document attachments (PDF, Office, etc.)
      * @param mediaAttachments    MIME types of image/video/audio attachments
      * @param otherAttachments    MIME types of all other attachments
@@ -65,6 +69,8 @@ public final class Email {
         String spf,
         String dmarc,
         String body,
+        String threadId,
+        int threadSize,
         List<String> documentAttachments,
         List<String> mediaAttachments,
         List<String> otherAttachments
@@ -83,6 +89,8 @@ public final class Email {
         this.spf = spf;
         this.dmarc = dmarc;
         this.body = body;
+        this.threadId = threadId;
+        this.threadSize = threadSize;
         this.documentAttachments =
             documentAttachments != null ? documentAttachments : List.of();
         this.mediaAttachments =
@@ -215,6 +223,25 @@ public final class Email {
      */
     public String getBody() {
         return body;
+    }
+
+    /**
+     * Returns the JMAP thread ID this email belongs to.
+     *
+     * @return JMAP thread ID
+     */
+    public String getThreadId() {
+        return threadId;
+    }
+
+    /**
+     * Returns the number of emails in the same JMAP thread.
+     * A value of 1 means this is a standalone message with no prior messages in the thread.
+     *
+     * @return thread size
+     */
+    public int getThreadSize() {
+        return threadSize;
     }
 
     /**

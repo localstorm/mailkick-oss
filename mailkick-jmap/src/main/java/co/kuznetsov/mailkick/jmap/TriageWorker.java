@@ -95,7 +95,12 @@ public class TriageWorker implements Runnable {
 
         LOG.info("Processing email: id={}", emailId);
         try {
-            processor.process(emailId, emailNode.get());
+            String threadId = emailNode.get().path("threadId").asText("");
+            int threadSize = 1;
+            if (!threadId.isBlank()) {
+                threadSize = fetcher.fetchThreadSize(threadId);
+            }
+            processor.process(emailId, emailNode.get(), threadSize);
         } catch (Exception e) {
             LOG.error("Failed to process email {}: {}", emailId, e.getMessage(), e);
         }

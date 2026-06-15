@@ -7,17 +7,22 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Resolves FastMail folder names and roles to JMAP mailbox IDs.
  *
- * <p>Resolution is performed once at construction time via a single {@code Mailbox/get} JMAP call.
- * The resolved mappings are stored in immutable maps and reused for all subsequent lookups.
+ * <p>The mailbox list is fetched from the server at construction time and cached.
+ * The cache is automatically refreshed after {@value #CACHE_TTL_MS} ms, and also
+ * on-demand whenever a folder lookup misses — so folders created after startup are
+ * visible without a restart.  Callers should still be prepared for an {@link IOException}
+ * if a folder genuinely does not exist.
  *
  * <p>Full slash-delimited paths (e.g. {@code Inbox/Papertrail/Shopping}) are the
- * canonical form. Bare leaf names (e.g. {@code Shopping}) are also supported as a
+ * canonical form.  Bare leaf names (e.g. {@code Shopping}) are also supported as a
  * fallback for unambiguous cases.
  */
 public final class MailboxResolver {
@@ -26,16 +31,23 @@ public final class MailboxResolver {
         MailboxResolver.class
     );
 
+    /** How long the cached mailbox list is considered fresh before a background refresh. */
+    static final long CACHE_TTL_MS = 5L * 60 * 1000;
+
     private static final String ROLE_INBOX = "inbox";
     private static final String ROLE_TRASH = "trash";
     private static final String ROLE_JUNK = "junk";
     private static final String ROLE_ARCHIVE = "archive";
 
+    private final JmapClient client;
+    private final JmapSession session;
+
     /** Maps lowercase full path (e.g. {@code papertrail/shopping}) to mailbox ID. */
-    private final Map<String, String> pathToId;
+    private final AtomicReference<Map<String, String>> pathToId = new AtomicReference<>();
     /** Maps lowercase leaf name (e.g. {@code shopping}) to mailbox ID — fallback only. */
-    private final Map<String, String> nameToId;
-    private final Map<String, String> roleToId;
+    private final AtomicReference<Map<String, String>> nameToId = new AtomicReference<>();
+    private final AtomicReference<Map<String, String>> roleToId = new AtomicReference<>();
+    private final AtomicLong lastRefreshedAt = new AtomicLong(0);
 
     /**
      * Constructs a {@code MailboxResolver} by fetching all mailboxes from the JMAP server.
@@ -46,6 +58,18 @@ public final class MailboxResolver {
      */
     public MailboxResolver(JmapClient client, JmapSession session)
         throws IOException {
+        this.client = client;
+        this.session = session;
+        refresh();
+    }
+
+    /**
+     * Fetches the current mailbox list from the server and replaces the cached maps.
+     * Thread-safe: the maps are published atomically via {@link AtomicReference} fields.
+     *
+     * @throws IOException if the JMAP request fails or the response cannot be parsed
+     */
+    public synchronized void refresh() throws IOException {
         ArrayNode methodCalls = client.newMethodCalls();
         ObjectNode args = client.newArgs();
         args.put("accountId", session.getPrimaryAccountId());
@@ -99,12 +123,27 @@ public final class MailboxResolver {
             nameMap.put(leafName.toLowerCase(), id);
         }
 
-        this.pathToId = Collections.unmodifiableMap(pathMap);
-        this.nameToId = Collections.unmodifiableMap(nameMap);
-        this.roleToId = Collections.unmodifiableMap(roleMap);
+        this.pathToId.set(Collections.unmodifiableMap(pathMap));
+        this.nameToId.set(Collections.unmodifiableMap(nameMap));
+        this.roleToId.set(Collections.unmodifiableMap(roleMap));
+        this.lastRefreshedAt.set(System.currentTimeMillis());
 
-        LOG.info("Resolved {} mailboxes", pathToId.size());
-        LOG.debug("Mailbox paths: {}", pathToId.keySet());
+        LOG.info("Resolved {} mailboxes", pathToId.get().size());
+        LOG.debug("Mailbox paths: {}", pathToId.get().keySet());
+    }
+
+    /**
+     * Refreshes the mailbox cache if it has not been refreshed within the TTL window.
+     * Failures are logged as warnings but do not propagate — the existing cache stays live.
+     */
+    public void refreshIfStale() {
+        if (System.currentTimeMillis() - lastRefreshedAt.get() > CACHE_TTL_MS) {
+            try {
+                refresh();
+            } catch (IOException e) {
+                LOG.warn("Mailbox cache refresh failed, using stale data: {}", e.getMessage());
+            }
+        }
     }
 
     /**
@@ -114,20 +153,35 @@ public final class MailboxResolver {
      * and bare leaf names (e.g. {@code Shopping}) as a fallback.
      * Path lookup is tried first.
      *
+     * <p>If the folder is not found in the current cache, the cache is refreshed once
+     * from the server before throwing — so folders created after the last refresh are
+     * picked up automatically.
+     *
      * @param name the full folder path (e.g. {@code Inbox/Papertrail/Shopping}) or bare name
      * @return the JMAP mailbox ID
      * @throws IOException if no mailbox matching the given name or path was found
      */
     public String getMailboxId(String name) throws IOException {
-        String lower = name.toLowerCase();
-        // Try full path first (e.g. "papertrail/shopping")
-        String id = pathToId.get(lower);
-        // Fall back to leaf name (e.g. "shopping")
-        if (id == null) {
-            id = nameToId.get(lower);
+        refreshIfStale();
+        String id = lookupInCache(name);
+        if (id != null) {
+            return id;
         }
+        // Cache miss — the folder may have been created after the last refresh; try once more.
+        LOG.info("Mailbox '{}' not in cache — refreshing mailbox list", name);
+        refresh();
+        id = lookupInCache(name);
         if (id == null) {
             throw new IOException("Mailbox not found: " + name);
+        }
+        return id;
+    }
+
+    private String lookupInCache(String name) {
+        String lower = name.toLowerCase();
+        String id = pathToId.get().get(lower);
+        if (id == null) {
+            id = nameToId.get().get(lower);
         }
         return id;
     }
@@ -155,7 +209,8 @@ public final class MailboxResolver {
      * @throws IOException if the inbox mailbox was not found
      */
     public String getInboxId() throws IOException {
-        String id = roleToId.get(ROLE_INBOX);
+        refreshIfStale();
+        String id = roleToId.get().get(ROLE_INBOX);
         if (id == null) {
             throw new IOException("Inbox mailbox not found");
         }
@@ -169,7 +224,8 @@ public final class MailboxResolver {
      * @throws IOException if the trash mailbox was not found
      */
     public String getTrashId() throws IOException {
-        String id = roleToId.get(ROLE_TRASH);
+        refreshIfStale();
+        String id = roleToId.get().get(ROLE_TRASH);
         if (id == null) {
             throw new IOException("Trash mailbox not found");
         }
@@ -183,7 +239,8 @@ public final class MailboxResolver {
      * @throws IOException if the spam/junk mailbox was not found
      */
     public String getSpamId() throws IOException {
-        String id = roleToId.get(ROLE_JUNK);
+        refreshIfStale();
+        String id = roleToId.get().get(ROLE_JUNK);
         if (id == null) {
             throw new IOException("Spam/Junk mailbox not found");
         }
@@ -197,7 +254,8 @@ public final class MailboxResolver {
      * @throws IOException if the archive mailbox was not found
      */
     public String getArchiveId() throws IOException {
-        String id = roleToId.get(ROLE_ARCHIVE);
+        refreshIfStale();
+        String id = roleToId.get().get(ROLE_ARCHIVE);
         if (id == null) {
             throw new IOException("Archive mailbox not found");
         }

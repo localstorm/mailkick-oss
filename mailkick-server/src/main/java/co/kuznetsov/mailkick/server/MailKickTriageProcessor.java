@@ -90,7 +90,14 @@ public final class MailKickTriageProcessor implements TriageProcessor {
             name,
             call,
             msg -> healthTracker.recordFailure(HealthComponent.TRIAGE, msg),
-            () -> healthTracker.recordSuccess(HealthComponent.TRIAGE)
+            () -> healthTracker.recordSuccess(HealthComponent.TRIAGE),
+            () -> {
+                try {
+                    resolver.refresh();
+                } catch (IOException e) {
+                    LOG.warn("Mailbox cache flush during retry loop failed: {}", e.getMessage());
+                }
+            }
         );
     }
 

@@ -202,6 +202,7 @@ public final class AutoSpamRunner {
             }
 
             if (!newSpamSenders.isEmpty()) {
+                sweepRecentEmailsFromSpammers(newSpamSenders, purgatoryId, spamId, spamFolderKey, config);
                 placeSummaryReport(autoSpam, newSpamSenders, config);
             } else {
                 LOG.info("AutoSpam: no new spam rules created");
@@ -210,6 +211,45 @@ public final class AutoSpamRunner {
 
         // --- Always: fix read/unread inconsistencies in spam folder ---
         fixReadConsistency(spamId, spamFolderKey, config);
+    }
+
+    private void sweepRecentEmailsFromSpammers(
+        List<String> newSpamSenders,
+        String purgatoryId,
+        String spamId,
+        String spamFolderKey,
+        MailKickConfig config
+    ) {
+        boolean unread = config.shouldMarkUnread(spamFolderKey);
+        for (String sender : newSpamSenders) {
+            try {
+                List<String> remainingIds = jmapRetry(
+                    "autospam.sweepQuery:" + sender,
+                    () -> fetcher.queryEmailIdsBySenderInMailbox(purgatoryId, sender));
+                LOG.info(
+                    "AutoSpam sweep: {} remaining email(s) in purgatory from {}",
+                    remainingIds.size(),
+                    sender
+                );
+                for (String emailId : remainingIds) {
+                    jmapRetryVoid("autospam.sweepRead:" + emailId, () -> {
+                        mover.setRead(emailId, !unread);
+                        return null;
+                    });
+                    jmapRetryVoid("autospam.sweepMove:" + emailId, () -> {
+                        mover.moveToMailbox(emailId, spamId);
+                        return null;
+                    });
+                }
+            } catch (RuntimeException e) {
+                LOG.error(
+                    "AutoSpam sweep failed for sender {} (interrupted): {}",
+                    sender,
+                    e.getMessage()
+                );
+                throw e;
+            }
+        }
     }
 
     private void placeSummaryReport(

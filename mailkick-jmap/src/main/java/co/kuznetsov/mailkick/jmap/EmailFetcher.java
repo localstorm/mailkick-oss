@@ -288,6 +288,43 @@ public class EmailFetcher {
     }
 
     /**
+     * Queries email IDs in a specific mailbox sent from the given sender address.
+     *
+     * @param mailboxId   the JMAP mailbox ID to search within
+     * @param senderEmail the sender address to filter by
+     * @return list of matching email IDs
+     * @throws IOException if the JMAP request fails
+     */
+    public java.util.List<String> queryEmailIdsBySenderInMailbox(
+        String mailboxId,
+        String senderEmail
+    ) throws IOException {
+        ArrayNode methodCalls = client.newMethodCalls();
+        ObjectNode args = client.newArgs();
+        args.put("accountId", session.getPrimaryAccountId());
+        ObjectNode filter = args.putObject("filter");
+        filter.put("inMailbox", mailboxId);
+        filter.put("from", senderEmail);
+        client.addMethodCall(methodCalls, "Email/query", args, "q0");
+
+        ArrayNode responses = client.execute(session.getApiUrl(), methodCalls);
+        JsonNode result = responses.get(0).get(1);
+        JsonNode ids = result.path("ids");
+
+        java.util.List<String> emailIds = new java.util.ArrayList<>();
+        for (JsonNode id : ids) {
+            emailIds.add(id.asText());
+        }
+        LOG.debug(
+            "queryEmailIdsBySenderInMailbox mailbox={} sender={} found={}",
+            mailboxId,
+            senderEmail,
+            emailIds.size()
+        );
+        return emailIds;
+    }
+
+    /**
      * Creates an HTML email directly in the given mailbox using JMAP {@code Email/set}.
      *
      * <p>The email is not sent via SMTP — it is placed directly in the specified folder,

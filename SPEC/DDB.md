@@ -29,7 +29,7 @@ The `sender` value is either an email address (`user@example.com`) or a bare dom
 
 ### Capacity
 
-- **Billing mode:** `PAY_PER_REQUEST` (on-demand). Volume is low — at most a few writes per day from the LLM `add_rule` tool or the Thunderbird UI, and one read per inbound email.
+- **Billing mode:** `PAY_PER_REQUEST` (on-demand). Volume is low — at most a few writes per day from the LLM `add_rule` tool, and one read per inbound email.
 
 ### Example items
 
@@ -163,4 +163,4 @@ The IAM user whose keypair is baked into the Docker image (`AWS_ACCESS_KEY_ID` /
 | `dynamodb:BatchWriteItem` | — | ✓ |
 | `dynamodb:Scan` | ✓ | — |
 
-`Scan` on `mailkick.rules` is used only by the Thunderbird extension UI to list all rules — it is acceptable on a small table.
+`Scan` on `mailkick.rules` is acceptable on a small table.

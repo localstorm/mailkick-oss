@@ -105,14 +105,8 @@ IMAGE_TAR="$DIST_DIR/mailkick.tar"
 echo "==> Saving image to $IMAGE_TAR..."
 docker save mailkick:latest -o "$IMAGE_TAR"
 
+rm -f "$CREDENTIALS_FILE"
+
 echo ""
 echo "Build complete. Image saved to mailkick-docker/dist/mailkick.tar"
 echo ""
-
-# ── Cleanup prompt ─────────────────────────────────────────────────────────────
-printf "Remove credentials.sh from mailkick-docker/download/? [y/N] "
-read -r answer
-case "$answer" in
-    [yY]*) rm -f "$CREDENTIALS_FILE"; echo "Cleaned up." ;;
-    *)     echo "credentials.sh left in place." ;;
-esac

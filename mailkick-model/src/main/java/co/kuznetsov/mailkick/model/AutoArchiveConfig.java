@@ -3,10 +3,10 @@ package co.kuznetsov.mailkick.model;
 /**
  * Configuration for the AutoArchive feature.
  *
- * <p>When configured, MailKick monitors FastMail's built-in Archive folder, tags arriving
- * emails with a timestamp keyword, waits until all emails in a thread have settled for at
- * least {@link #getSettlingMinutes()} minutes, then asks the LLM to file the whole thread
- * by calling {@code move_chain}.
+ * <p>When configured, MailKick monitors FastMail's built-in Archive folder, tracks each
+ * arriving email's first-seen time in memory, waits until all emails in a thread have
+ * settled for at least {@link #getSettlingMinutes()} minutes, then asks the LLM to file
+ * the whole thread by calling {@code move_chain}.
  */
 public final class AutoArchiveConfig {
 

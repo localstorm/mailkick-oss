@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,17 +35,25 @@ import org.slf4j.LoggerFactory;
 /**
  * Background task that periodically processes emails in a configured archive staging folder.
  *
- * <p>On each cycle: emails without an arrival keyword are tagged, then threads where every
- * email has been settled for at least {@code settlingMinutes} are passed to the LLM which
- * calls {@code move_chain} to file the entire thread into a permanent folder.
+ * <p>On each cycle: emails not yet seen have their arrival time recorded in memory, then threads
+ * where every email has been settled for at least {@code settlingMinutes} are passed to the LLM
+ * which calls {@code move_chain} to file the entire thread into a permanent folder.
+ *
+ * <p>All per-email AutoArchive state (arrival time, failed-settle attempt count) is tracked
+ * in-memory rather than via IMAP keywords. FastMail (Cyrus IMAP) caps each mailbox at a fixed
+ * number of distinct custom keyword names ever used, a cap that is never reclaimed even after a
+ * keyword is unset from every message — so any keyword-based tracking scheme eventually
+ * exhausts it permanently. In-memory tracking means AutoArchive never touches keywords at all.
+ * The tradeoff is that a server restart loses in-flight state, giving every email in the folder
+ * a fresh settling window.
  */
 public final class AutoArchiveRunner {
 
     private static final Logger LOG = LoggerFactory.getLogger(AutoArchiveRunner.class);
 
     private static final int RUN_INTERVAL_MS = 120_000;
-    private static final String ARRIVAL_KEYWORD_PREFIX = "mailkick-archived-";
     private static final int SECONDS_PER_MINUTE = 60;
+    private static final int MAX_SETTLE_ATTEMPTS = 3;
 
     private final AgentPromptLoader promptLoader;
     private final JmapClient jmapClient;
@@ -55,6 +64,8 @@ public final class AutoArchiveRunner {
     private final ToolRegistry toolRegistry;
     private final HealthTracker healthTracker;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final Map<String, Long> arrivalEpochByEmailId = new ConcurrentHashMap<>();
+    private final Map<String, Integer> failedAttemptsByThreadId = new ConcurrentHashMap<>();
 
     /**
      * Constructs an {@code AutoArchiveRunner} with all required dependencies.
@@ -63,7 +74,7 @@ public final class AutoArchiveRunner {
      * @param jmapClient     JMAP client used to refresh the mailbox resolver each run
      * @param jmapSession    active JMAP session used to refresh the mailbox resolver each run
      * @param fetcher        email fetcher for querying and reading emails
-     * @param mover          email mover for keyword and mailbox operations
+     * @param mover          email mover for mailbox operations
      * @param anthropicAgent LLM agent used to decide where to file each thread
      * @param toolRegistry   tool registry for resolving extra tools per prompt
      * @param healthTracker  health tracker for recording JMAP failures and recoveries
@@ -104,6 +115,9 @@ public final class AutoArchiveRunner {
     }
 
     private void run() {
+        arrivalEpochByEmailId.clear();
+        failedAttemptsByThreadId.clear();
+
         try {
             executeAutoArchive();
         } catch (Exception e) {
@@ -134,27 +148,23 @@ public final class AutoArchiveRunner {
         }
 
         AutoArchiveConfig archiveCfg = config.getAutoArchive();
-        String archiveFolder = archiveCfg.getArchiveFolder();
         int settlingMinutes = archiveCfg.getSettlingMinutes();
         String archivePromptName = archiveCfg.getArchivePromptName();
 
-        LOG.info("AutoArchive starting — folder={} settlingMinutes={}", archiveFolder, settlingMinutes);
+        LOG.info("AutoArchive starting — settlingMinutes={}", settlingMinutes);
 
         MailboxResolver resolver = jmapRetry("autoarchive.resolveMailboxes",
             () -> new MailboxResolver(jmapClient, jmapSession));
 
         String archiveFolderId = jmapRetry("autoarchive.resolveArchiveFolder",
-            () -> resolver.getMailboxId(archiveFolder));
+            resolver::getArchiveId);
         List<EmailSummary> allEmails = jmapRetry("autoarchive.queryEmails",
             () -> fetcher.queryAllEmailsInMailbox(archiveFolderId));
         LOG.info("AutoArchive found {} email(s) in archive folder", allEmails.size());
 
-        tagUnmarkedEmails(allEmails);
+        recordArrivals(allEmails);
 
-        List<EmailSummary> refreshed = jmapRetry("autoarchive.refreshEmails",
-            () -> fetcher.queryAllEmailsInMailbox(archiveFolderId));
-
-        Map<String, List<EmailSummary>> byThread = groupByThread(refreshed);
+        Map<String, List<EmailSummary>> byThread = groupByThread(allEmails);
 
         long nowSeconds = Instant.now().getEpochSecond();
         long settlingSeconds = (long) settlingMinutes * SECONDS_PER_MINUTE;
@@ -182,31 +192,22 @@ public final class AutoArchiveRunner {
                 );
             } catch (Exception e) {
                 LOG.error("AutoArchive failed to process thread {}: {}", threadId, e.getMessage(), e);
+                try {
+                    recordFailedAttempt(threadId, threadEmails, resolver);
+                } catch (IOException ioe) {
+                    LOG.error("AutoArchive failed to record attempt for thread {}: {}", threadId, ioe.getMessage(), ioe);
+                }
             }
         }
     }
 
-    private void tagUnmarkedEmails(List<EmailSummary> emails) {
+    private void recordArrivals(List<EmailSummary> emails) {
         long nowEpoch = Instant.now().getEpochSecond();
         for (EmailSummary summary : emails) {
-            if (!hasArrivalKeyword(summary)) {
-                String keyword = ARRIVAL_KEYWORD_PREFIX + nowEpoch;
-                jmapRetryVoid("autoarchive.tagEmail:" + summary.getId(), () -> {
-                    mover.setKeyword(summary.getId(), keyword, true);
-                    return null;
-                });
-                LOG.info("AutoArchive: tagged email {} with arrival keyword '{}'", summary.getId(), keyword);
+            if (arrivalEpochByEmailId.putIfAbsent(summary.getId(), nowEpoch) == null) {
+                LOG.info("AutoArchive: recorded arrival of email {}", summary.getId());
             }
         }
-    }
-
-    private boolean hasArrivalKeyword(EmailSummary summary) {
-        for (String kw : summary.getKeywords().keySet()) {
-            if (kw.startsWith(ARRIVAL_KEYWORD_PREFIX)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private Map<String, List<EmailSummary>> groupByThread(List<EmailSummary> emails) {
@@ -235,18 +236,7 @@ public final class AutoArchiveRunner {
     }
 
     private long extractArrivalEpoch(EmailSummary summary) {
-        for (String kw : summary.getKeywords().keySet()) {
-            if (kw.startsWith(ARRIVAL_KEYWORD_PREFIX)) {
-                String epochStr = kw.substring(ARRIVAL_KEYWORD_PREFIX.length());
-                try {
-                    return Long.parseLong(epochStr);
-                } catch (NumberFormatException e) {
-                    LOG.warn("Malformed arrival keyword '{}' on email {}", kw, summary.getId());
-                    return -1;
-                }
-            }
-        }
-        return -1;
+        return arrivalEpochByEmailId.getOrDefault(summary.getId(), -1L);
     }
 
     private void processSettledThread(
@@ -257,9 +247,9 @@ public final class AutoArchiveRunner {
         MailKickConfig config,
         MailboxResolver resolver
     ) throws IOException {
-        Map<String, String> emailIdToArrivalKeyword = new HashMap<>();
+        List<String> emailIds = new ArrayList<>();
         for (EmailSummary s : threadEmailsInFolder) {
-            emailIdToArrivalKeyword.put(s.getId(), getArrivalKeyword(s));
+            emailIds.add(s.getId());
         }
 
         EmailSummary rootSummary = findChainRoot(threadEmailsInFolder);
@@ -283,9 +273,9 @@ public final class AutoArchiveRunner {
                 rootEmail.getFrom()
             );
             String inboxId = jmapRetry("autoarchive.resolveInbox", resolver::getInboxId);
-            for (String emailId : emailIdToArrivalKeyword.keySet()) {
-                jmapRetryVoid("autoarchive.flagInjection:" + emailId, () -> {
-                    mover.moveToInboxUnreadFlagged(emailId, inboxId);
+            for (EmailSummary summary : threadEmailsInFolder) {
+                jmapRetryVoid("autoarchive.flagInjection:" + summary.getId(), () -> {
+                    moveToInboxFlagged(summary, inboxId);
                     return null;
                 });
             }
@@ -293,7 +283,7 @@ public final class AutoArchiveRunner {
         }
 
         MoveChainTool moveChainTool = new MoveChainTool(
-            emailIdToArrivalKeyword,
+            emailIds,
             archiveFolderId,
             resolver,
             mover
@@ -323,11 +313,55 @@ public final class AutoArchiveRunner {
 
         if (moveCall == null) {
             LOG.warn("AutoArchive: LLM did not call move_chain for thread {}, leaving in place", threadId);
+            recordFailedAttempt(threadId, threadEmailsInFolder, resolver);
             return;
         }
 
         moveChainTool.execute(moveCall.getInput(), rootEmail);
-        LOG.info("AutoArchive: filed thread {} ({} email(s))", threadId, emailIdToArrivalKeyword.size());
+        for (String emailId : emailIds) {
+            arrivalEpochByEmailId.remove(emailId);
+        }
+        failedAttemptsByThreadId.remove(threadId);
+        LOG.info("AutoArchive: filed thread {} ({} email(s))", threadId, emailIds.size());
+    }
+
+    /**
+     * Increments the per-thread failed-settle-attempt counter, held in memory. Once the counter
+     * reaches {@link #MAX_SETTLE_ATTEMPTS}, the thread is given up on and moved to the Inbox
+     * unread and flagged so the user can triage it manually, instead of being re-submitted to the
+     * LLM every cycle indefinitely.
+     */
+    private void recordFailedAttempt(
+        String threadId,
+        List<EmailSummary> threadEmailsInFolder,
+        MailboxResolver resolver
+    ) throws IOException {
+        int attempts = failedAttemptsByThreadId.merge(threadId, 1, Integer::sum);
+
+        if (attempts >= MAX_SETTLE_ATTEMPTS) {
+            LOG.warn(
+                "AutoArchive: thread {} failed to settle after {} attempt(s), moving to Inbox flagged",
+                threadId,
+                attempts
+            );
+            String inboxId = jmapRetry("autoarchive.resolveInbox", resolver::getInboxId);
+            for (EmailSummary summary : threadEmailsInFolder) {
+                jmapRetryVoid("autoarchive.giveUp:" + summary.getId(), () -> {
+                    moveToInboxFlagged(summary, inboxId);
+                    return null;
+                });
+            }
+            failedAttemptsByThreadId.remove(threadId);
+        }
+    }
+
+    /**
+     * Moves an email to the inbox, unread and flagged, and clears its in-memory AutoArchive state
+     * so it does not carry stale arrival tracking once it leaves the Archive folder.
+     */
+    private void moveToInboxFlagged(EmailSummary summary, String inboxId) throws IOException {
+        mover.moveToInboxUnreadFlagged(summary.getId(), inboxId);
+        arrivalEpochByEmailId.remove(summary.getId());
     }
 
     private <T> T jmapRetry(String name, JmapRetry.JmapOperation<T> op) {
@@ -359,14 +393,5 @@ public final class AutoArchiveRunner {
             }
         }
         return root != null ? root : threadEmails.get(0);
-    }
-
-    private String getArrivalKeyword(EmailSummary summary) {
-        for (String kw : summary.getKeywords().keySet()) {
-            if (kw.startsWith(ARRIVAL_KEYWORD_PREFIX)) {
-                return kw;
-            }
-        }
-        return ARRIVAL_KEYWORD_PREFIX + "unknown";
     }
 }

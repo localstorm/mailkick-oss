@@ -155,7 +155,6 @@ public final class MailKickConfigXml {
                 Element el = (Element) autoArchiveNodes.item(0);
                 co.kuznetsov.mailkick.model.AutoArchiveConfig autoArchive =
                     new co.kuznetsov.mailkick.model.AutoArchiveConfig();
-                autoArchive.setArchiveFolder(getChildText(el, "archiveFolder"));
                 autoArchive.setArchivePromptName(getChildText(el, "archivePromptName"));
                 String minsStr = getChildText(el, "settlingMinutes");
                 if (minsStr != null) {

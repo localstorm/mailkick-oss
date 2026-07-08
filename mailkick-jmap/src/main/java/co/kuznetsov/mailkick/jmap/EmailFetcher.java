@@ -386,7 +386,7 @@ public class EmailFetcher {
     }
 
     /**
-     * Queries all emails in a mailbox and returns their id, threadId, and keywords.
+     * Queries all emails in a mailbox and returns their id and threadId.
      *
      * <p>Uses {@code Email/query} to retrieve all IDs in the mailbox, then {@code Email/get}
      * with a minimal property set to fetch metadata for each email.
@@ -427,7 +427,6 @@ public class EmailFetcher {
         ArrayNode props = getArgs.putArray("properties");
         props.add("id");
         props.add("threadId");
-        props.add("keywords");
         client.addMethodCall(getMethodCalls, "Email/get", getArgs, "e0");
         ArrayNode getResponses = client.execute(session.getApiUrl(), getMethodCalls);
         JsonNode getResult = getResponses.get(0).get(1);
@@ -437,12 +436,7 @@ public class EmailFetcher {
         for (JsonNode emailNode : emailList) {
             String id = emailNode.path("id").asText();
             String threadId = emailNode.path("threadId").asText();
-            java.util.Map<String, Boolean> keywords = new java.util.LinkedHashMap<>();
-            JsonNode kwNode = emailNode.path("keywords");
-            if (kwNode.isObject()) {
-                kwNode.fields().forEachRemaining(e -> keywords.put(e.getKey(), e.getValue().asBoolean(true)));
-            }
-            summaries.add(new EmailSummary(id, threadId, keywords));
+            summaries.add(new EmailSummary(id, threadId));
         }
 
         LOG.debug("queryAllEmailsInMailbox mailbox={} found={}", mailboxId, summaries.size());
@@ -479,29 +473,22 @@ public class EmailFetcher {
     }
 
     /**
-     * Holds a brief summary of an email: its JMAP ID, thread ID, and keyword map.
+     * Holds a brief summary of an email: its JMAP ID and thread ID.
      */
     public static final class EmailSummary {
 
         private final String id;
         private final String threadId;
-        private final java.util.Map<String, Boolean> keywords;
 
         /**
          * Constructs an {@code EmailSummary}.
          *
          * @param id       JMAP email ID
          * @param threadId JMAP thread ID
-         * @param keywords map of keyword name to boolean value
          */
-        public EmailSummary(
-            String id,
-            String threadId,
-            java.util.Map<String, Boolean> keywords
-        ) {
+        public EmailSummary(String id, String threadId) {
             this.id = id;
             this.threadId = threadId;
-            this.keywords = keywords;
         }
 
         /** Returns the JMAP email ID. */
@@ -512,11 +499,6 @@ public class EmailFetcher {
         /** Returns the JMAP thread ID. */
         public String getThreadId() {
             return threadId;
-        }
-
-        /** Returns the keyword map for this email. */
-        public java.util.Map<String, Boolean> getKeywords() {
-            return keywords;
         }
     }
 

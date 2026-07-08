@@ -1,8 +1,11 @@
 package co.kuznetsov.mailkick.jmap;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
+import java.util.Iterator;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +34,42 @@ public class EmailMover {
     }
 
     /**
+     * Executes an {@code Email/set} method call and verifies every targeted email ID actually
+     * succeeded.
+     *
+     * <p>{@link JmapClient#execute} only detects request-level JMAP errors; a per-item failure
+     * (e.g. a rejected keyword patch due to a stale state precondition) is reported inside the
+     * {@code Email/set} response's {@code notUpdated} map and would otherwise pass silently,
+     * leaving the caller believing the change applied when it did not.
+     *
+     * @throws IOException if the HTTP/JMAP call fails, or any targeted email ID appears in
+     *                      {@code notUpdated}
+     */
+    private void executeEmailSet(ArrayNode methodCalls) throws IOException {
+        ArrayNode responses = client.execute(session.getApiUrl(), methodCalls);
+        for (JsonNode entry : responses) {
+            if (!"Email/set".equals(entry.path(0).asText())) {
+                continue;
+            }
+            JsonNode notUpdated = entry.path(1).path("notUpdated");
+            if (notUpdated.isObject() && notUpdated.size() > 0) {
+                Iterator<Map.Entry<String, JsonNode>> fields = notUpdated.fields();
+                StringBuilder details = new StringBuilder();
+                while (fields.hasNext()) {
+                    Map.Entry<String, JsonNode> field = fields.next();
+                    details.append(field.getKey())
+                        .append('=')
+                        .append(field.getValue().path("type").asText())
+                        .append(':')
+                        .append(field.getValue().path("description").asText())
+                        .append(' ');
+                }
+                throw new IOException("Email/set rejected update(s): " + details.toString().trim());
+            }
+        }
+    }
+
+    /**
      * Moves an email to the specified mailbox by setting its {@code mailboxIds}.
      *
      * <p>The email will be placed exclusively in the target mailbox; any previous
@@ -50,7 +89,7 @@ public class EmailMover {
         ObjectNode mailboxIds = emailUpdate.putObject("mailboxIds");
         mailboxIds.put(targetMailboxId, true);
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
+        executeEmailSet(methodCalls);
         LOG.debug("Moved email {} to mailbox {}", emailId, targetMailboxId);
     }
 
@@ -69,7 +108,7 @@ public class EmailMover {
         ObjectNode emailUpdate = update.putObject(emailId);
         emailUpdate.put("keywords/$seen", read);
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
+        executeEmailSet(methodCalls);
         LOG.debug("Set email {} read={}", emailId, read);
     }
 
@@ -88,29 +127,8 @@ public class EmailMover {
         ObjectNode emailUpdate = update.putObject(emailId);
         emailUpdate.put("keywords/$flagged", flagged);
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
+        executeEmailSet(methodCalls);
         LOG.debug("Set email {} flagged={}", emailId, flagged);
-    }
-
-    /**
-     * Sets or removes a single keyword on an email via {@code Email/set} patch.
-     *
-     * @param emailId  the JMAP email ID
-     * @param keyword  the keyword to set or clear
-     * @param value    {@code true} to add the keyword, {@code false} to remove it
-     * @throws IOException if the JMAP request fails
-     */
-    public void setKeyword(String emailId, String keyword, boolean value)
-        throws IOException {
-        ArrayNode methodCalls = client.newMethodCalls();
-        ObjectNode args = client.newArgs();
-        args.put("accountId", session.getPrimaryAccountId());
-        ObjectNode update = args.putObject("update");
-        ObjectNode emailUpdate = update.putObject(emailId);
-        emailUpdate.put("keywords/" + keyword, value);
-        client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
-        LOG.debug("Set keyword '{}' on email {} to {}", keyword, emailId, value);
     }
 
     /**
@@ -136,45 +154,8 @@ public class EmailMover {
             mailboxIds.put(targetMailboxId, true);
         }
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
+        executeEmailSet(methodCalls);
         LOG.info("Moved {} email(s) to mailbox {}", emailIds.size(), targetMailboxId);
-    }
-
-    /**
-     * Moves all given emails to a target mailbox and removes each email's own arrival keyword,
-     * in a single batched {@code Email/set} call.
-     *
-     * <p>Each email may carry a different {@code mailkick-archived-<ts>} keyword (tagged at
-     * different epoch seconds), so the keyword to remove is supplied per email.
-     *
-     * @param emailIdToKeyword map of JMAP email ID to the keyword to remove from that email
-     * @param targetMailboxId  the destination JMAP mailbox ID
-     * @throws IOException if the JMAP request fails
-     */
-    public void moveAllToMailboxAndRemoveKeyword(
-        java.util.Map<String, String> emailIdToKeyword,
-        String targetMailboxId
-    ) throws IOException {
-        if (emailIdToKeyword.isEmpty()) {
-            return;
-        }
-        ArrayNode methodCalls = client.newMethodCalls();
-        ObjectNode args = client.newArgs();
-        args.put("accountId", session.getPrimaryAccountId());
-        ObjectNode update = args.putObject("update");
-        for (java.util.Map.Entry<String, String> entry : emailIdToKeyword.entrySet()) {
-            ObjectNode emailUpdate = update.putObject(entry.getKey());
-            ObjectNode mailboxIds = emailUpdate.putObject("mailboxIds");
-            mailboxIds.put(targetMailboxId, true);
-            emailUpdate.putNull("keywords/" + entry.getValue());
-        }
-        client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
-        LOG.info(
-            "Moved {} email(s) to mailbox {}",
-            emailIdToKeyword.size(),
-            targetMailboxId
-        );
     }
 
     /**
@@ -190,7 +171,20 @@ public class EmailMover {
         ArrayNode destroyIds = args.putArray("destroy");
         destroyIds.add(emailId);
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
-        client.execute(session.getApiUrl(), methodCalls);
+        ArrayNode responses = client.execute(session.getApiUrl(), methodCalls);
+        for (JsonNode entry : responses) {
+            if (!"Email/set".equals(entry.path(0).asText())) {
+                continue;
+            }
+            JsonNode notDestroyed = entry.path(1).path("notDestroyed");
+            if (notDestroyed.has(emailId)) {
+                JsonNode reason = notDestroyed.path(emailId);
+                throw new IOException(
+                    "Email/set rejected destroy of " + emailId + ": "
+                        + reason.path("type").asText() + ":" + reason.path("description").asText()
+                );
+            }
+        }
         LOG.info("Destroyed email {}", emailId);
     }
 

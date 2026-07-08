@@ -22,7 +22,6 @@
         <reportSender>mailkick@example.com</reportSender>
     </autoSpam>
     <autoArchive>
-        <archiveFolder>Archive</archiveFolder>
         <settlingMinutes>10</settlingMinutes>
         <archivePromptName>archivePrompt</archivePromptName>
     </autoArchive>

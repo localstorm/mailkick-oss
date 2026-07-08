@@ -744,13 +744,14 @@ Runs immediately on startup, then every **5 minutes**.
 
 ## AutoArchive
 
-A recurring task that classifies settled mail chains that have been moved to a designated archive staging folder. Each email is tagged with a JMAP keyword encoding the time MailKick first saw it in the folder. Once every email in a thread carries a tag older than the settling duration, the chain root is passed to an LLM which decides the final destination and moves the entire chain via a dedicated `move_chain` tool.
+A recurring task that classifies settled mail chains that have accumulated in FastMail's built-in Archive folder (JMAP `role: "archive"`, resolved via `MailboxResolver.getArchiveId()` — not a configurable path). Each email's arrival time is recorded in memory when first seen. Once every email in a thread has been tracked for longer than the settling duration, the chain root is passed to an LLM which decides the final destination and moves the entire chain via a dedicated `move_chain` tool.
+
+All per-email AutoArchive state (arrival time, failed-settle attempt count) is tracked in-memory rather than via IMAP keywords. FastMail (Cyrus IMAP) caps each mailbox at a fixed number of distinct custom keyword names ever used, a cap that is never reclaimed even after a keyword is unset from every message — so a keyword-based tracking scheme eventually exhausts it permanently. The tradeoff of in-memory tracking is that a server restart loses in-flight state, giving every email in the folder a fresh settling window.
 
 ### Configuration (in S3 XML config)
 
 ```xml
 <autoArchive>
-    <archiveFolder>Archive/Inbox</archiveFolder>
     <settlingMinutes>10</settlingMinutes>
     <archivePromptName>archive</archivePromptName>
 </autoArchive>
@@ -758,37 +759,32 @@ A recurring task that classifies settled mail chains that have been moved to a d
 
 | Field | Default | Description |
 |---|---|---|
-| `archiveFolder` | — | Folder that receives emails to be classified (full path, e.g. `Archive/Inbox`). Required. |
-| `settlingMinutes` | `10` | Minutes that must elapse after first-seen tagging before a thread is eligible for processing. |
+| `settlingMinutes` | `10` | Minutes that must elapse after first-seen tracking before a thread is eligible for processing. |
 | `archivePromptName` | — | Key into the S3 config `prompts` map used for the LLM classification call. Required. |
 
-### Arrival tagging
+### Arrival tracking
 
-The runner wakes every **2 minutes**. On each cycle the first step is always tagging:
+The runner wakes every **2 minutes**. On each cycle the first step is always recording arrivals:
 
-1. Query `archiveFolder` for **all** email IDs currently in it (JMAP `Email/query` with `inMailbox` filter; also request `keywords` and `threadId` in the properties).
-2. For each email that does **not** already carry a `mailkick-archived-<epoch-seconds>` keyword: apply the keyword `mailkick-archived-<now-epoch-seconds>` via JMAP `Email/set` patch (`keywords/mailkick-archived-<ts>: true`).
-3. Emails that already have the keyword are left unchanged — their tag timestamp is preserved across cycles.
-
-The keyword name encodes the tag time, so no external store is needed. JMAP user-defined keyword names must match `[a-zA-Z0-9_-]+` (RFC 8621 §2); `mailkick-archived-1748390400` is valid.
+1. Query the Archive folder for **all** email IDs currently in it (JMAP `Email/query` with `inMailbox` filter; also request `id` and `threadId` in the properties).
+2. For each email ID not already present in the in-memory `arrivalEpochByEmailId` map, record the current epoch-seconds timestamp.
+3. Emails already tracked are left unchanged — their arrival timestamp is preserved across cycles, until the process restarts (which clears all in-memory state).
 
 ### Settling check and thread grouping
 
-After tagging, identify threads ready for processing:
+After recording arrivals, identify threads ready for processing:
 
-1. From the full set of emails in `archiveFolder` (already fetched above), read each email's `mailkick-archived-<ts>` keyword and parse the epoch timestamp.
-2. An email is **settled** when `now - tag_epoch >= settlingMinutes`.
-3. Group all emails by `threadId`. A thread is **ready** when **every** email in `archiveFolder` belonging to that thread is settled.
+1. From the full set of emails in the Archive folder (already fetched above), look up each email's arrival epoch in the in-memory map.
+2. An email is **settled** when `now - arrival_epoch >= settlingMinutes`.
+3. Group all emails by `threadId`. A thread is **ready** when **every** email in the Archive folder belonging to that thread is settled.
 4. Threads that are not yet fully settled are left alone — they will be re-evaluated on the next cycle.
 
 ### Thread root resolution
 
 For each ready thread:
 
-1. Call `Thread/get` with the `threadId` to obtain all email IDs in the full thread (including emails that may be in other folders).
-2. From the full thread list, retain only the IDs that are currently in `archiveFolder`.
-3. Among that subset, pick the email with the **lowest `mailkick-archived-<ts>` tag epoch** — the email MailKick first placed in the folder — this is the **chain root**. `receivedAt` is not used: mail chains can span months, so the original send time has no bearing on which email arrived in the archive folder first.
-4. Fetch and normalise the chain root using the same XML normalisation as triage (`EmailNormaliser`).
+1. Among the emails in the Archive folder belonging to the thread, pick the email with the **lowest recorded arrival epoch** — the email MailKick first saw in the folder — this is the **chain root**. `receivedAt` is not used: mail chains can span months, so the original send time has no bearing on which email arrived in the archive folder first.
+2. Fetch and normalise the chain root using the same XML normalisation as triage (`EmailNormaliser`).
 
 ### LLM classification call
 
@@ -798,35 +794,44 @@ The normalised root email XML is sent to the Anthropic model with the `archivePr
 ```
 move_chain(destinationFolder: String)
 ```
-- `destinationFolder` — full folder path to move the entire chain to (e.g. `Archive/Finance`).
+- `destinationFolder` — full folder path to move the entire chain to (e.g. `Archive/Finance`). Must not be the Archive folder itself.
 
 On execution, `move_chain`:
-1. Moves all emails from the thread that are currently in `archiveFolder` to `destinationFolder` (batched JMAP `Email/set`).
-2. Removes the `mailkick-archived-<ts>` keyword from each moved email (clean-up; emails outside MailKick's `archiveFolder` should not carry the tag).
+1. Resolves `destinationFolder` to a mailbox ID. If it resolves to the Archive folder itself, the LLM's choice is rejected: every email in the thread is instead moved to Inbox unread and flagged for manual triage, and an error is logged.
+2. Otherwise, moves all emails from the thread to `destinationFolder` (batched JMAP `Email/set`).
 
-If the LLM does not call `move_chain`, the chain is left in place and retried on the next cycle after its tags age further. A warning is logged.
+If the LLM does not call `move_chain`, or the call throws, the failure is recorded as a failed attempt for the thread (see below). A warning is logged.
+
+### Retry and give-up on unsettled threads
+
+Each failed attempt to file a thread (LLM didn't call `move_chain`, or processing threw) increments an in-memory per-thread attempt counter (`failedAttemptsByThreadId`). After **3** failed attempts, the thread gives up: every email in it is moved to Inbox, marked unread and flagged, so the user can triage it manually — instead of being resubmitted to the LLM every cycle indefinitely. A successful `move_chain` clears both the attempt counter and the arrival-time entries for the thread's emails. Moving emails out to the Inbox (give-up path or injection detection) also clears their arrival-time entries.
 
 ### Deduplication and idempotency
 
 - **Within a cycle:** each `threadId` is processed at most once.
-- **Across cycles:** after a successful `move_chain`, emails leave `archiveFolder` and lose their tags. They no longer appear in the initial `archiveFolder` query — the thread is naturally retired.
-- **New arrivals to an existing thread:** if a new email arrives in `archiveFolder` after the rest of the thread has already settled, it gets tagged on first sight. The thread is blocked from processing until the new member's tag age also exceeds `settlingMinutes`. The rest of the thread's tags are older but the new member is the blocker — correct behaviour.
-- **Partial move failure:** if a JMAP error leaves some emails un-moved, they retain their tags and will re-qualify for processing on the next cycle (their tags are already old enough). The chain root is re-resolved from whatever remains in `archiveFolder`.
+- **Across cycles:** after a successful `move_chain`, emails leave the Archive folder and their in-memory arrival entries are cleared. They no longer appear in the initial Archive folder query — the thread is naturally retired.
+- **New arrivals to an existing thread:** if a new email arrives in the Archive folder after the rest of the thread has already settled, its arrival is recorded on first sight. The thread is blocked from processing until the new member's tracked age also exceeds `settlingMinutes`. The rest of the thread's timestamps are older but the new member is the blocker — correct behaviour.
+- **Partial move failure:** if a JMAP error leaves some emails un-moved, they retain their in-memory arrival entries and will re-qualify for processing on the next cycle (already old enough). The chain root is re-resolved from whatever remains in the Archive folder. Each failure increments the attempt counter described above.
+- **Process restart:** all in-memory arrival and attempt state is cleared, so every email in the Archive folder gets a fresh settling window.
 
-### New JMAP primitives required
+### JMAP verification
+
+`EmailMover`'s `Email/set`-based methods (move, mark read/unread, flag, batched move) verify the response's `notUpdated` map and throw if any targeted email ID was rejected, rather than assuming success once the request round-trips without a top-level JMAP error. `destroy` similarly checks `notDestroyed`. This ensures a per-item rejection (e.g. a stale-state precondition failure) surfaces as an exception instead of silently leaving the email unchanged.
+
+### JMAP primitives required
 
 | Method | Description |
 |---|---|
-| `EmailFetcher.queryAllEmailsInMailbox(mailboxId)` | JMAP `Email/query` + `Email/get` fetching `id`, `threadId`, `keywords` for all emails in the mailbox. |
+| `EmailFetcher.queryAllEmailsInMailbox(mailboxId)` | JMAP `Email/query` + `Email/get` fetching `id`, `threadId` for all emails in the mailbox. |
 | `EmailFetcher.fetchThreadEmailIds(threadId)` | JMAP `Thread/get` — returns all email IDs in the thread. |
-| `EmailMover.setKeyword(emailId, keyword, value)` | JMAP `Email/set` patch — sets or removes an arbitrary keyword on a single email. |
-| `EmailMover.moveAllToMailboxAndRemoveKeyword(emailIds, mailboxId, keyword)` | Batched JMAP `Email/set` — moves a list of emails and removes the named keyword in one request. |
+| `EmailMover.moveAllToMailbox(emailIds, mailboxId)` | Batched JMAP `Email/set` — moves a list of emails to a mailbox. |
+| `MailboxResolver.getArchiveId()` | Resolves the JMAP mailbox ID for the account's Archive folder (`role: "archive"`). |
 
 ### Implementation
 
 - `AutoArchiveConfig` — model class in `mailkick-model`
-- `AutoArchiveRunner` — scheduled runner in `mailkick-server`; background thread wakes every 2 minutes
-- `MoveChainTool` — tool executor in `mailkick-agent`; receives the thread email IDs in context, moves all of them and strips the arrival keyword on `move_chain` invocation
+- `AutoArchiveRunner` — scheduled runner in `mailkick-server`; background thread wakes every 2 minutes; holds the in-memory arrival and attempt-count maps
+- `MoveChainTool` — tool executor in `mailkick-agent`; receives the thread email IDs in context, moves all of them (or reroutes to Inbox flagged if the LLM chose the Archive folder) on `move_chain` invocation
 - `MailKickConfig.isAutoArchiveEnabled()` — convenience predicate
 - Config XML parsing in `MailKickConfigXml`
 - Bean wiring in `MailKickConfiguration`

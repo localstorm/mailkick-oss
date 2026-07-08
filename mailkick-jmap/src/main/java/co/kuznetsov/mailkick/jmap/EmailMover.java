@@ -57,12 +57,17 @@ public class EmailMover {
                 StringBuilder details = new StringBuilder();
                 while (fields.hasNext()) {
                     Map.Entry<String, JsonNode> field = fields.next();
+                    JsonNode reason = field.getValue();
                     details.append(field.getKey())
                         .append('=')
-                        .append(field.getValue().path("type").asText())
+                        .append(reason.path("type").asText())
                         .append(':')
-                        .append(field.getValue().path("description").asText())
-                        .append(' ');
+                        .append(reason.path("description").asText());
+                    JsonNode properties = reason.path("properties");
+                    if (properties.isArray() && properties.size() > 0) {
+                        details.append(" properties=").append(properties);
+                    }
+                    details.append(' ');
                 }
                 throw new IOException("Email/set rejected update(s): " + details.toString().trim());
             }
@@ -106,7 +111,11 @@ public class EmailMover {
         args.put("accountId", session.getPrimaryAccountId());
         ObjectNode update = args.putObject("update");
         ObjectNode emailUpdate = update.putObject(emailId);
-        emailUpdate.put("keywords/$seen", read);
+        if (read) {
+            emailUpdate.put("keywords/$seen", true);
+        } else {
+            emailUpdate.putNull("keywords/$seen");
+        }
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
         executeEmailSet(methodCalls);
         LOG.debug("Set email {} read={}", emailId, read);
@@ -125,7 +134,11 @@ public class EmailMover {
         args.put("accountId", session.getPrimaryAccountId());
         ObjectNode update = args.putObject("update");
         ObjectNode emailUpdate = update.putObject(emailId);
-        emailUpdate.put("keywords/$flagged", flagged);
+        if (flagged) {
+            emailUpdate.put("keywords/$flagged", true);
+        } else {
+            emailUpdate.putNull("keywords/$flagged");
+        }
         client.addMethodCall(methodCalls, "Email/set", args, "s0");
         executeEmailSet(methodCalls);
         LOG.debug("Set email {} flagged={}", emailId, flagged);
